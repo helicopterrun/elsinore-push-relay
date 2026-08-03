@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { apnsHost, apsPayload, makeJwtSigner, p8ToPkcs8Bytes, relayStatus, validate, type RelayRequest } from "../src/relay";
+import { apnsHost, apsPayload, makeJwtSigner, p8ToPkcs8Bytes, relayStatus, testPayload, validate, validateTest, type RelayRequest } from "../src/relay";
 import { rateLimited } from "../src/index";
 
 const good: RelayRequest = {
@@ -119,5 +119,61 @@ describe("rate limiter", () => {
     for (let i = 0; i < 60; i++) rateLimited("a", 1000 + i, sends);
     expect(rateLimited("a", 2000, sends)).toBe(true);
     expect(rateLimited("b", 2000, sends)).toBe(false);
+  });
+});
+
+// --- Test push (spec §1) -----------------------------------------------------
+// Backs the app's "Send test notification" button. A separate route because
+// /v1/relay/push requires `handle`, which a test push does not have.
+
+describe("validateTest", () => {
+  const goodTest = { device_token: "b".repeat(64), environment: "sandbox" };
+
+  it("accepts the two routing fields alone", () => {
+    expect(validateTest({ ...goodTest })).toBeNull();
+  });
+  it("does not require handle, server_id, severity or collapse id", () => {
+    // The same body would be rejected by the normal push route.
+    expect(validate({ ...goodTest })).not.toBeNull();
+  });
+  it("still enforces the token format and environment", () => {
+    expect(validateTest({ ...goodTest, device_token: "zz" })).toMatch(/hex/);
+    expect(validateTest({ ...goodTest, environment: "prod" })).toMatch(/environment/);
+    expect(validateTest({ ...goodTest, environment: undefined })).toMatch(/environment/);
+  });
+  it("rejects a non-object body", () => {
+    expect(validateTest(null)).toMatch(/JSON object/);
+  });
+});
+
+describe("testPayload", () => {
+  it("is the fixed alert the spec names", () => {
+    const p = testPayload() as { aps: Record<string, unknown> };
+    expect(p.aps.alert).toEqual({
+      title: "Test notification",
+      body: "Push notifications are working.",
+    });
+    expect(p.aps.sound).toBe("default");
+  });
+
+  it("carries no handle and no mutable-content", () => {
+    // There is nothing for the NSE to redeem, so it must pass the payload
+    // through unmodified; mutable-content would run it for no reason.
+    const p = testPayload() as Record<string, unknown> & { aps: Record<string, unknown> };
+    expect(p.handle).toBeUndefined();
+    expect(p.aps["mutable-content"]).toBeUndefined();
+  });
+
+  it("says nothing scene-specific", () => {
+    // Same content-minimality line as the real payload (spec §4).
+    const json = JSON.stringify(testPayload());
+    for (const leak of ["camera", "label", "zone", "event", "snapshot"]) {
+      expect(json.toLowerCase()).not.toContain(leak);
+    }
+  });
+
+  it("does not collapse, so two presses show two notifications", () => {
+    const p = testPayload() as { aps: Record<string, unknown> };
+    expect(p.aps["thread-id"]).toBeUndefined();
   });
 });

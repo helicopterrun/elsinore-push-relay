@@ -8,6 +8,12 @@
 // label, or imagery ever reaches this service; the iOS notification service
 // extension redeems `handle` against the user's own sidecar for the real
 // camera/thumbnail. See Elsinore's sidecar-push-notifications-spec.md §4.
+//
+// Second route: POST /v1/relay/test with {device_token, environment} only.
+// Backs the app's "Send test notification" button (spec §1, "Test push"). It
+// cannot reuse /v1/relay/push, which requires `handle` — a test push carries
+// no handle and no `mutable-content`, because there is nothing for the NSE to
+// redeem and a tap should just open the app.
 
 export interface RelayRequest {
   device_token: string;
@@ -18,23 +24,50 @@ export interface RelayRequest {
   "apns-collapse-id": string;
 }
 
+/** A test push needs only the two fields that decide *where* it goes. */
+export interface TestRequest {
+  device_token: string;
+  environment: "production" | "sandbox";
+}
+
 const TOKEN_RE = /^[0-9a-fA-F]{16,200}$/;
 const MAX_FIELD = 300;
 
-/** Parse and validate an incoming body; returns an error string, or null. */
-export function validate(body: unknown): string | null {
-  if (typeof body !== "object" || body === null) return "body must be a JSON object";
-  const b = body as Record<string, unknown>;
-  for (const key of ["device_token", "environment", "handle", "server_id", "severity", "apns-collapse-id"]) {
-    const v = b[key];
-    if (typeof v !== "string" || v.length === 0) return `${key} must be a non-empty string`;
-    if (v.length > MAX_FIELD) return `${key} too long`;
+function checkField(b: Record<string, unknown>, key: string): string | null {
+  const v = b[key];
+  if (typeof v !== "string" || v.length === 0) return `${key} must be a non-empty string`;
+  if (v.length > MAX_FIELD) return `${key} too long`;
+  return null;
+}
+
+/** Shared by both routes: the token and the endpoint it is routed to. */
+function checkRouting(b: Record<string, unknown>): string | null {
+  for (const key of ["device_token", "environment"]) {
+    const bad = checkField(b, key);
+    if (bad) return bad;
   }
   if (!TOKEN_RE.test(b.device_token as string)) return "device_token must be hex";
   if (b.environment !== "production" && b.environment !== "sandbox") {
     return "environment must be 'production' or 'sandbox'";
   }
   return null;
+}
+
+/** Parse and validate an incoming body; returns an error string, or null. */
+export function validate(body: unknown): string | null {
+  if (typeof body !== "object" || body === null) return "body must be a JSON object";
+  const b = body as Record<string, unknown>;
+  for (const key of ["handle", "server_id", "severity", "apns-collapse-id"]) {
+    const bad = checkField(b, key);
+    if (bad) return bad;
+  }
+  return checkRouting(b);
+}
+
+/** Same, for /v1/relay/test — routing fields only, nothing content-bearing. */
+export function validateTest(body: unknown): string | null {
+  if (typeof body !== "object" || body === null) return "body must be a JSON object";
+  return checkRouting(body as Record<string, unknown>);
 }
 
 export function apnsHost(environment: RelayRequest["environment"]): string {
@@ -59,6 +92,24 @@ export function apsPayload(req: RelayRequest): Record<string, unknown> {
     handle: req.handle,
     server_id: req.server_id,
     severity: req.severity,
+  };
+}
+
+/**
+ * The test-push payload: a fixed literal alert, spelled out by the spec (§1).
+ *
+ * Three deliberate absences. No `handle` — there is nothing to redeem, so the
+ * NSE passes this through unmodified and a tap just opens the app. No
+ * `mutable-content` — with it set the NSE would run and find nothing to
+ * enrich. No `thread-id`/collapse id — two presses of the button should show
+ * two notifications; collapsing them would look like the second press failed.
+ */
+export function testPayload(): Record<string, unknown> {
+  return {
+    aps: {
+      alert: { title: "Test notification", body: "Push notifications are working." },
+      sound: "default",
+    },
   };
 }
 

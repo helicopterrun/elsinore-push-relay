@@ -2,7 +2,18 @@
 // RelayTransport posts to. Holds no state beyond a per-isolate rate limiter
 // and the cached provider JWT — no database, no per-user records, by design.
 
-import { apnsHost, apsPayload, makeJwtSigner, relayStatus, validate, type JwtSigner, type RelayRequest } from "./relay";
+import {
+  apnsHost,
+  apsPayload,
+  makeJwtSigner,
+  relayStatus,
+  testPayload,
+  validate,
+  validateTest,
+  type JwtSigner,
+  type RelayRequest,
+  type TestRequest,
+} from "./relay";
 
 export interface Env {
   /** Contents of the AuthKey_XXXXXXXXXX.p8 file (with or without PEM armor). */
@@ -33,10 +44,46 @@ export function rateLimited(token: string, nowMs: number, sends: Map<string, num
   return false;
 }
 
+/**
+ * Sign, forward to Apple, and map the reply. Shared by both routes so the test
+ * push goes to the same host, with the same JWT and the same status mapping as
+ * a real one — the point of the button is that a black-holed token fails here
+ * exactly as it would in production.
+ */
+async function forward(
+  env: Env,
+  req: { device_token: string; environment: TestRequest["environment"] },
+  payload: Record<string, unknown>,
+  extraHeaders: Record<string, string> = {},
+): Promise<Response> {
+  signer ??= makeJwtSigner(env.APNS_AUTH_KEY, env.APNS_KEY_ID, env.APNS_TEAM_ID);
+  const jwt = await signer.token();
+
+  const apnsResponse = await fetch(
+    `https://${apnsHost(req.environment)}/3/device/${req.device_token}`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `bearer ${jwt}`,
+        "apns-topic": env.APNS_TOPIC,
+        "apns-push-type": "alert",
+        "apns-priority": "10",
+        ...extraHeaders,
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+
+  const { status, detail } = relayStatus(apnsResponse.status, await apnsResponse.text());
+  return Response.json({ detail }, { status });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (request.method !== "POST" || url.pathname !== "/v1/relay/push") {
+    const isPush = url.pathname === "/v1/relay/push";
+    const isTest = url.pathname === "/v1/relay/test";
+    if (request.method !== "POST" || (!isPush && !isTest)) {
       return Response.json({ error: "not found" }, { status: 404 });
     }
 
@@ -46,33 +93,24 @@ export default {
     } catch {
       return Response.json({ error: "invalid JSON" }, { status: 400 });
     }
-    const invalid = validate(body);
-    if (invalid) return Response.json({ error: invalid }, { status: 422 });
-    const req = body as unknown as RelayRequest;
 
-    if (rateLimited(req.device_token, Date.now())) {
+    const invalid = isTest ? validateTest(body) : validate(body);
+    if (invalid) return Response.json({ error: invalid }, { status: 422 });
+
+    // Rate limited on the same per-token budget as real pushes: the button is
+    // hand-driven, so it should never come near 60/hour, and exempting it
+    // would leave an unmetered path to Apple.
+    const token = (body as { device_token: string }).device_token;
+    if (rateLimited(token, Date.now())) {
       return Response.json({ error: "rate limited" }, { status: 429 });
     }
 
-    signer ??= makeJwtSigner(env.APNS_AUTH_KEY, env.APNS_KEY_ID, env.APNS_TEAM_ID);
-    const jwt = await signer.token();
-
-    const apnsResponse = await fetch(
-      `https://${apnsHost(req.environment)}/3/device/${req.device_token}`,
-      {
-        method: "POST",
-        headers: {
-          authorization: `bearer ${jwt}`,
-          "apns-topic": env.APNS_TOPIC,
-          "apns-push-type": "alert",
-          "apns-priority": "10",
-          "apns-collapse-id": req["apns-collapse-id"].slice(0, 64),
-        },
-        body: JSON.stringify(apsPayload(req)),
-      },
-    );
-
-    const { status, detail } = relayStatus(apnsResponse.status, await apnsResponse.text());
-    return Response.json({ detail }, { status });
+    if (isTest) {
+      return forward(env, body as unknown as TestRequest, testPayload());
+    }
+    const req = body as unknown as RelayRequest;
+    return forward(env, req, apsPayload(req), {
+      "apns-collapse-id": req["apns-collapse-id"].slice(0, 64),
+    });
   },
 };

@@ -17,6 +17,18 @@ sidecar after delivery. The relay keeps no database and no per-user records.
 
 `POST /v1/relay/push` with the JSON body above.
 
+`POST /v1/relay/test` with `{device_token, environment}` — and nothing else.
+Backs the app's "Send test notification" button (spec §1, "Test push"): a
+fixed alert (`"Test notification"` / `"Push notifications are working."`,
+`sound: default`) with **no `handle`** and **no `mutable-content`**, since
+there is nothing for the notification extension to redeem and a tap should
+just open the app. It is a separate route because `/v1/relay/push` requires
+`handle`, which a test push does not have.
+
+Both routes share the same JWT, the same APNs host selection, the same
+per-token rate limit and the same response mapping — a test send has to fail
+exactly the way a real one would, or it proves nothing.
+
 | Response | Meaning for the sidecar |
 |---|---|
 | `200` | Delivered to APNs. |
@@ -24,6 +36,11 @@ sidecar after delivery. The relay keeps no database and no per-user records.
 | `422` | Malformed request. |
 | `429` | Per-token rate limit (60/hour). |
 | `502` | APNs or relay trouble — log, don't prune, try again on the next event. |
+
+**`environment` is `"production"` or `"sandbox"`.** Note it is not `"prod"`,
+which is the spelling the sidecar's own `/v1/push/devices` API and database
+use — the sidecar translates at its relay boundary. A body carrying `"prod"`
+is rejected `422` by both routes.
 
 ## Deploy (Cloudflare Workers)
 
