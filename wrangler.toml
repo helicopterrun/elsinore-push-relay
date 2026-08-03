@@ -1,0 +1,10 @@
+name = "elsinore-push-relay"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+# Non-secret config. Secrets (set with `wrangler secret put`):
+#   APNS_AUTH_KEY  — contents of AuthKey_<KEYID>.p8
+#   APNS_KEY_ID    — the 10-char key id from developer.apple.com
+#   APNS_TEAM_ID   — the Apple Developer team id
+[vars]
+APNS_TOPIC = "com.houseofpaimon.Elsinore"
