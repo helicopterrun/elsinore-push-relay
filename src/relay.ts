@@ -52,6 +52,15 @@ export interface SituationRelayRequest {
  * than letting Apple 400 for `PayloadTooLarge` — same bound, clearer error. */
 export const APNS_PAYLOAD_MAX_BYTES = 4096;
 
+/** APNs' own cap on the `apns-collapse-id` header. The other route
+ * (`/v1/relay/push`) silently truncates because its collapse id is a single
+ * review id and truncation is harmless. This route's id is composite —
+ * `<situation-id>:<track-id>` — and truncating from the right eats the
+ * track id, silently collapsing two distinct tracks into one notification
+ * and quietly violating the plan's "distinct tracks stay distinct" property.
+ * So this route *rejects* oversized instead of trimming. */
+export const APNS_COLLAPSE_ID_MAX_BYTES = 64;
+
 const TOKEN_RE = /^[0-9a-fA-F]{16,200}$/;
 const MAX_FIELD = 300;
 
@@ -103,6 +112,11 @@ export function validateSituation(body: unknown): string | null {
   const b = body as Record<string, unknown>;
   const bad = checkField(b, "apns-collapse-id");
   if (bad) return bad;
+  // Strict cap on this route; see APNS_COLLAPSE_ID_MAX_BYTES for the reasoning.
+  const collapseBytes = new TextEncoder().encode(b["apns-collapse-id"] as string).byteLength;
+  if (collapseBytes > APNS_COLLAPSE_ID_MAX_BYTES) {
+    return `apns-collapse-id too large (${collapseBytes} > ${APNS_COLLAPSE_ID_MAX_BYTES})`;
+  }
   const routing = checkRouting(b);
   if (routing) return routing;
   if (typeof b.payload !== "object" || b.payload === null) {

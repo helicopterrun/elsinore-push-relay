@@ -120,8 +120,13 @@ export default {
       // The sidecar has already assembled `payload` — including interruption
       // level, sound, thread-id, category, and the situation-shaped extras.
       // The relay contributes only routing and the collapse-id header.
+      //
+      // Deliberately no `.slice(0, 64)` here: `validateSituation` rejects
+      // oversized collapse-ids up front, because truncating a composite
+      // `<situation-id>:<track-id>` would silently collapse distinct tracks
+      // into one notification. See APNS_COLLAPSE_ID_MAX_BYTES.
       return forward(env, req, req.payload, {
-        "apns-collapse-id": req["apns-collapse-id"].slice(0, 64),
+        "apns-collapse-id": req["apns-collapse-id"],
       });
     }
     const req = body as unknown as RelayRequest;

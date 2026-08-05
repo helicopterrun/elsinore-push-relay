@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  APNS_COLLAPSE_ID_MAX_BYTES,
   APNS_PAYLOAD_MAX_BYTES,
   apnsHost,
   apsPayload,
@@ -230,6 +231,17 @@ describe("validateSituation", () => {
   it("requires payload.aps — an APNs body without aps is silently dropped by Apple", () => {
     expect(validateSituation({ ...goodSituation, payload: {} })).toMatch(/aps/);
     expect(validateSituation({ ...goodSituation, payload: { foo: 1 } })).toMatch(/aps/);
+  });
+
+  it("rejects collapse-ids over APNs' 64-byte cap rather than silently truncating", () => {
+    // This route's collapse id is composite (`<situation-id>:<track-id>`) and
+    // truncating from the right would eat the track id, silently collapsing
+    // two distinct tracks into one notification. The other route can safely
+    // truncate; this one must reject.
+    const oversized = { ...goodSituation, "apns-collapse-id": "s".repeat(APNS_COLLAPSE_ID_MAX_BYTES + 1) };
+    expect(validateSituation(oversized)).toMatch(/collapse-id too large/);
+    const atCap = { ...goodSituation, "apns-collapse-id": "s".repeat(APNS_COLLAPSE_ID_MAX_BYTES) };
+    expect(validateSituation(atCap)).toBeNull();
   });
 
   it("rejects payloads over APNs' 4KB cap rather than letting Apple 400 for it", () => {
