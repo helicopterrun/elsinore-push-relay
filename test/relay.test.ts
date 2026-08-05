@@ -4,13 +4,16 @@ import {
   APNS_PAYLOAD_MAX_BYTES,
   apnsHost,
   apsPayload,
+  liveActivityTopic,
   makeJwtSigner,
   p8ToPkcs8Bytes,
   relayStatus,
   testPayload,
   validate,
+  validateLiveActivity,
   validateSituation,
   validateTest,
+  type LiveActivityRelayRequest,
   type RelayRequest,
   type SituationRelayRequest,
 } from "../src/relay";
@@ -283,5 +286,135 @@ describe("situation route wire contract", () => {
       title: "At the door",
       body: "Person, 6s",
     });
+  });
+});
+
+// Live Activity route — different push type, different topic, different token.
+describe("validateLiveActivity", () => {
+  const goodStart: LiveActivityRelayRequest = {
+    device_token: "b".repeat(64),
+    environment: "production",
+    "apns-collapse-id": "at-the-door:t-42",
+    event: "start",
+    payload: {
+      aps: {
+        timestamp: 1785957012,
+        event: "start",
+        "content-state": {
+          stage: "arriving",
+          dwell_seconds: 0,
+          title: "At the door",
+          subtitle: "Person arrived",
+          thumbnail_revision: 1,
+        },
+        "attributes-type": "SituationActivityAttributes",
+        attributes: {
+          situation_id: "at-the-door",
+          situation_name: "At the door",
+          camera_id: "doorbell",
+          handle: "h_abc",
+        },
+        alert: { title: "At the door", body: "Person arrived" },
+      },
+    },
+  };
+
+  const goodUpdate: LiveActivityRelayRequest = {
+    device_token: "b".repeat(64),
+    environment: "production",
+    "apns-collapse-id": "at-the-door:t-42",
+    event: "update",
+    payload: {
+      aps: {
+        timestamp: 1785957015,
+        event: "update",
+        "content-state": {
+          stage: "present",
+          dwell_seconds: 3,
+          title: "At the door",
+          subtitle: "Person, waiting",
+          thumbnail_revision: 1,
+        },
+      },
+    },
+  };
+
+  const goodEnd: LiveActivityRelayRequest = {
+    device_token: "b".repeat(64),
+    environment: "production",
+    "apns-collapse-id": "at-the-door:t-42",
+    event: "end",
+    payload: {
+      aps: {
+        timestamp: 1785957042,
+        event: "end",
+        "content-state": {
+          stage: "ending",
+          dwell_seconds: 12,
+          title: "At the door",
+          subtitle: "Left",
+          thumbnail_revision: 1,
+        },
+        "dismissal-date": 1785957072,
+      },
+    },
+  };
+
+  it("accepts start / update / end payloads", () => {
+    expect(validateLiveActivity(goodStart)).toBeNull();
+    expect(validateLiveActivity(goodUpdate)).toBeNull();
+    expect(validateLiveActivity(goodEnd)).toBeNull();
+  });
+
+  it("rejects an unknown event", () => {
+    expect(validateLiveActivity({ ...goodUpdate, event: "pause" })).toMatch(/event/);
+  });
+
+  it("rejects a start missing attributes", () => {
+    const bad = {
+      ...goodStart,
+      payload: {
+        aps: {
+          event: "start",
+          "content-state": (goodStart.payload.aps as any)["content-state"],
+        },
+      },
+    };
+    expect(validateLiveActivity(bad)).toMatch(/attributes/);
+  });
+
+  it("rejects when top-level event and aps.event disagree", () => {
+    const bad = {
+      ...goodUpdate,
+      event: "start" as const,
+    };
+    expect(validateLiveActivity(bad)).toMatch(/event/);
+  });
+
+  it("shares the 64-byte collapse-id cap with the situation route", () => {
+    const bad = {
+      ...goodUpdate,
+      "apns-collapse-id": "x".repeat(APNS_COLLAPSE_ID_MAX_BYTES + 1),
+    };
+    expect(validateLiveActivity(bad)).toMatch(/collapse-id too large/);
+  });
+
+  it("rejects payloads over APNs' 4KB cap", () => {
+    const bad = {
+      ...goodUpdate,
+      payload: {
+        aps: (goodUpdate.payload as any).aps,
+        blob: "z".repeat(APNS_PAYLOAD_MAX_BYTES + 1),
+      },
+    };
+    expect(validateLiveActivity(bad)).toMatch(/too large/);
+  });
+});
+
+describe("liveActivityTopic", () => {
+  it("appends the Apple-required .push-type.liveactivity suffix", () => {
+    expect(liveActivityTopic("com.houseofpaimon.Elsinore")).toBe(
+      "com.houseofpaimon.Elsinore.push-type.liveactivity",
+    );
   });
 });

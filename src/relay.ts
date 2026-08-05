@@ -61,6 +61,25 @@ export const APNS_PAYLOAD_MAX_BYTES = 4096;
  * So this route *rejects* oversized instead of trimming. */
 export const APNS_COLLAPSE_ID_MAX_BYTES = 64;
 
+/**
+ * v2 Live Activity push (Elsinore Phase 2 plan). Same shape as the situation
+ * route, but goes to a different push type + topic:
+ *
+ * - `apns-push-type: liveactivity` (not `alert`)
+ * - `apns-topic: <bundle_id>.push-type.liveactivity`
+ *
+ * `event` echoes the `aps.event` inside the payload so we can 422 a payload
+ * whose start-shape is missing `attributes` up front instead of letting Apple
+ * do it later with a less helpful message.
+ */
+export interface LiveActivityRelayRequest {
+  device_token: string;
+  environment: "production" | "sandbox";
+  "apns-collapse-id": string;
+  event: "start" | "update" | "end";
+  payload: Record<string, unknown>;
+}
+
 const TOKEN_RE = /^[0-9a-fA-F]{16,200}$/;
 const MAX_FIELD = 300;
 
@@ -107,6 +126,61 @@ export function validateTest(body: unknown): string | null {
  * oversized). Everything scene-specific inside `payload` is opaque to the
  * relay by design.
  */
+/**
+ * /v1/relay/liveactivity: routing + collapse-id + event + a sidecar-authored
+ * LA payload. Validates that the payload's `aps.event` matches the top-level
+ * `event`, and that a `start` payload carries the required `attributes` +
+ * `attributes-type` (Apple 400s a start without them).
+ */
+export function validateLiveActivity(body: unknown): string | null {
+  if (typeof body !== "object" || body === null) return "body must be a JSON object";
+  const b = body as Record<string, unknown>;
+  const bad = checkField(b, "apns-collapse-id");
+  if (bad) return bad;
+  const collapseBytes = new TextEncoder().encode(b["apns-collapse-id"] as string).byteLength;
+  if (collapseBytes > APNS_COLLAPSE_ID_MAX_BYTES) {
+    return `apns-collapse-id too large (${collapseBytes} > ${APNS_COLLAPSE_ID_MAX_BYTES})`;
+  }
+  const routing = checkRouting(b);
+  if (routing) return routing;
+  if (b.event !== "start" && b.event !== "update" && b.event !== "end") {
+    return "event must be 'start' | 'update' | 'end'";
+  }
+  if (typeof b.payload !== "object" || b.payload === null) {
+    return "payload must be a JSON object";
+  }
+  const payload = b.payload as Record<string, unknown>;
+  const aps = payload.aps;
+  if (typeof aps !== "object" || aps === null) {
+    return "payload.aps must be a JSON object";
+  }
+  const apsRecord = aps as Record<string, unknown>;
+  if (apsRecord.event !== b.event) {
+    return `payload.aps.event (${apsRecord.event}) must match top-level event (${b.event})`;
+  }
+  // A start needs the static attributes that let iOS create the activity.
+  if (b.event === "start") {
+    if (typeof apsRecord["attributes-type"] !== "string") {
+      return "payload.aps.attributes-type is required for event='start'";
+    }
+    if (typeof apsRecord["attributes"] !== "object" || apsRecord["attributes"] === null) {
+      return "payload.aps.attributes is required for event='start'";
+    }
+  }
+  const size = new TextEncoder().encode(JSON.stringify(payload)).byteLength;
+  if (size > APNS_PAYLOAD_MAX_BYTES) return `payload too large (${size} > ${APNS_PAYLOAD_MAX_BYTES})`;
+  return null;
+}
+
+/**
+ * The `apns-topic` for a Live Activity push — the app's own bundle id with
+ * `.push-type.liveactivity` appended, per Apple. Derived rather than
+ * env-configured so a wrong topic can't ship with the config.
+ */
+export function liveActivityTopic(baseTopic: string): string {
+  return `${baseTopic}.push-type.liveactivity`;
+}
+
 export function validateSituation(body: unknown): string | null {
   if (typeof body !== "object" || body === null) return "body must be a JSON object";
   const b = body as Record<string, unknown>;

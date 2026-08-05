@@ -5,13 +5,16 @@
 import {
   apnsHost,
   apsPayload,
+  liveActivityTopic,
   makeJwtSigner,
   relayStatus,
   testPayload,
   validate,
+  validateLiveActivity,
   validateSituation,
   validateTest,
   type JwtSigner,
+  type LiveActivityRelayRequest,
   type RelayRequest,
   type SituationRelayRequest,
   type TestRequest,
@@ -61,6 +64,10 @@ async function forward(
   signer ??= makeJwtSigner(env.APNS_AUTH_KEY, env.APNS_KEY_ID, env.APNS_TEAM_ID);
   const jwt = await signer.token();
 
+  // `extraHeaders` is spread last so a route that needs different `apns-topic`
+  // or `apns-push-type` (the Live Activity route sends
+  // `liveactivity` + `.push-type.liveactivity` topic) can override the
+  // per-request defaults established for the historical `alert` shape.
   const apnsResponse = await fetch(
     `https://${apnsHost(req.environment)}/3/device/${req.device_token}`,
     {
@@ -86,7 +93,11 @@ export default {
     const isPush = url.pathname === "/v1/relay/push";
     const isTest = url.pathname === "/v1/relay/test";
     const isSituation = url.pathname === "/v1/relay/situation";
-    if (request.method !== "POST" || (!isPush && !isTest && !isSituation)) {
+    const isLiveActivity = url.pathname === "/v1/relay/liveactivity";
+    if (
+      request.method !== "POST" ||
+      (!isPush && !isTest && !isSituation && !isLiveActivity)
+    ) {
       return Response.json({ error: "not found" }, { status: 404 });
     }
 
@@ -101,6 +112,8 @@ export default {
       ? validateTest(body)
       : isSituation
       ? validateSituation(body)
+      : isLiveActivity
+      ? validateLiveActivity(body)
       : validate(body);
     if (invalid) return Response.json({ error: invalid }, { status: 422 });
 
@@ -126,6 +139,19 @@ export default {
       // `<situation-id>:<track-id>` would silently collapse distinct tracks
       // into one notification. See APNS_COLLAPSE_ID_MAX_BYTES.
       return forward(env, req, req.payload, {
+        "apns-collapse-id": req["apns-collapse-id"],
+      });
+    }
+    if (isLiveActivity) {
+      const req = body as unknown as LiveActivityRelayRequest;
+      // LA push shape overrides two headers vs the alert path: the topic gains
+      // the `.push-type.liveactivity` suffix (Apple contract) and the push
+      // type flips from `alert` to `liveactivity`. Priority stays 10 —
+      // Present-tier LAs are still user-attention-worthy, just silent by
+      // absence of the `alert` key in the payload's aps.
+      return forward(env, req, req.payload, {
+        "apns-topic": liveActivityTopic(env.APNS_TOPIC),
+        "apns-push-type": "liveactivity",
         "apns-collapse-id": req["apns-collapse-id"],
       });
     }
