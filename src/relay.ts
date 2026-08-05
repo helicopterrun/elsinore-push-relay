@@ -30,6 +30,28 @@ export interface TestRequest {
   environment: "production" | "sandbox";
 }
 
+/**
+ * v2 situation push (Elsinore notification-experience-plan §8). The payload is
+ * *sidecar-authored* — title/body/thread-id/interruption-level/sound and the
+ * situation-shaped extras (situation_id, handle, actions_available) are all
+ * decided at MQTT-match time — so the relay does no templating for this route.
+ * It validates routing, forwards the payload verbatim to APNs, and returns.
+ *
+ * "Content-free" here still holds: the relay never persists or logs body
+ * bytes — TLS-in-flight transit to APNs is unchanged from every other route.
+ */
+export interface SituationRelayRequest {
+  device_token: string;
+  environment: "production" | "sandbox";
+  "apns-collapse-id": string;
+  /** Full APNs payload, already assembled by the sidecar. */
+  payload: Record<string, unknown>;
+}
+
+/** APNs standard-alert cap. Rejecting oversized payloads here is friendlier
+ * than letting Apple 400 for `PayloadTooLarge` — same bound, clearer error. */
+export const APNS_PAYLOAD_MAX_BYTES = 4096;
+
 const TOKEN_RE = /^[0-9a-fA-F]{16,200}$/;
 const MAX_FIELD = 300;
 
@@ -68,6 +90,33 @@ export function validate(body: unknown): string | null {
 export function validateTest(body: unknown): string | null {
   if (typeof body !== "object" || body === null) return "body must be a JSON object";
   return checkRouting(body as Record<string, unknown>);
+}
+
+/**
+ * /v1/relay/situation: routing + collapse-id + a sidecar-authored payload
+ * object. Rejects payloads that would 400 at APNs anyway (missing `aps`,
+ * oversized). Everything scene-specific inside `payload` is opaque to the
+ * relay by design.
+ */
+export function validateSituation(body: unknown): string | null {
+  if (typeof body !== "object" || body === null) return "body must be a JSON object";
+  const b = body as Record<string, unknown>;
+  const bad = checkField(b, "apns-collapse-id");
+  if (bad) return bad;
+  const routing = checkRouting(b);
+  if (routing) return routing;
+  if (typeof b.payload !== "object" || b.payload === null) {
+    return "payload must be a JSON object";
+  }
+  const aps = (b.payload as Record<string, unknown>).aps;
+  if (typeof aps !== "object" || aps === null) {
+    return "payload.aps must be a JSON object";
+  }
+  // Size check on the serialized body — same limit APNs enforces itself, so
+  // failing here means "will never work," not "might work depending on Apple."
+  const size = new TextEncoder().encode(JSON.stringify(b.payload)).byteLength;
+  if (size > APNS_PAYLOAD_MAX_BYTES) return `payload too large (${size} > ${APNS_PAYLOAD_MAX_BYTES})`;
+  return null;
 }
 
 export function apnsHost(environment: RelayRequest["environment"]): string {

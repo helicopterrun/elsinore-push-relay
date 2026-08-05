@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { apnsHost, apsPayload, makeJwtSigner, p8ToPkcs8Bytes, relayStatus, testPayload, validate, validateTest, type RelayRequest } from "../src/relay";
+import {
+  APNS_PAYLOAD_MAX_BYTES,
+  apnsHost,
+  apsPayload,
+  makeJwtSigner,
+  p8ToPkcs8Bytes,
+  relayStatus,
+  testPayload,
+  validate,
+  validateSituation,
+  validateTest,
+  type RelayRequest,
+  type SituationRelayRequest,
+} from "../src/relay";
 import { rateLimited } from "../src/index";
 
 const good: RelayRequest = {
@@ -175,5 +188,88 @@ describe("testPayload", () => {
   it("does not collapse, so two presses show two notifications", () => {
     const p = testPayload() as { aps: Record<string, unknown> };
     expect(p.aps["thread-id"]).toBeUndefined();
+  });
+});
+
+// v2 situation route — the sidecar authors the whole APNs payload; the relay
+// only routes and stamps the collapse-id header.
+describe("validateSituation", () => {
+  const goodSituation: SituationRelayRequest = {
+    device_token: "a".repeat(64),
+    environment: "production",
+    "apns-collapse-id": "at-the-door:track-42",
+    payload: {
+      aps: {
+        alert: { title: "At the door", body: "Person, 6s" },
+        sound: "chime-1.caf",
+        "thread-id": "at-the-door",
+        "interruption-level": "time-sensitive",
+        "mutable-content": 1,
+        category: "situation.at-the-door",
+      },
+      situation_id: "at-the-door",
+      handle: "h_9f3a",
+      actions_available: ["live-view", "snooze-15m", "mute-situation"],
+    },
+  };
+
+  it("accepts a well-formed sidecar payload", () => {
+    expect(validateSituation(goodSituation)).toBeNull();
+  });
+
+  it("shares routing rules with the other routes", () => {
+    expect(validateSituation({ ...goodSituation, environment: "staging" })).toMatch(/environment/);
+    expect(validateSituation({ ...goodSituation, device_token: "zz" })).toMatch(/hex/);
+  });
+
+  it("requires the collapse-id — situation pushes always collapse per-track", () => {
+    const { ["apns-collapse-id"]: _, ...missing } = goodSituation;
+    expect(validateSituation(missing)).toMatch(/collapse-id/);
+  });
+
+  it("requires payload.aps — an APNs body without aps is silently dropped by Apple", () => {
+    expect(validateSituation({ ...goodSituation, payload: {} })).toMatch(/aps/);
+    expect(validateSituation({ ...goodSituation, payload: { foo: 1 } })).toMatch(/aps/);
+  });
+
+  it("rejects payloads over APNs' 4KB cap rather than letting Apple 400 for it", () => {
+    const oversized = {
+      ...goodSituation,
+      payload: {
+        aps: { alert: { title: "x", body: "y" } },
+        blob: "z".repeat(APNS_PAYLOAD_MAX_BYTES + 1),
+      },
+    };
+    expect(validateSituation(oversized)).toMatch(/too large/);
+  });
+});
+
+describe("situation route wire contract", () => {
+  it("keeps the situation payload verbatim — the relay does no templating", () => {
+    // The whole point of the route: what the sidecar wrote is what APNs sees.
+    // This test guards against a future refactor that would helpfully "clean
+    // up" the payload before forwarding.
+    const req: SituationRelayRequest = {
+      device_token: "a".repeat(64),
+      environment: "production",
+      "apns-collapse-id": "at-the-door:track-1",
+      payload: {
+        aps: {
+          alert: { title: "At the door", body: "Person, 6s" },
+          "interruption-level": "time-sensitive",
+          "mutable-content": 1,
+          category: "situation.at-the-door",
+        },
+        situation_id: "at-the-door",
+        handle: "h_abc",
+      },
+    };
+    // If anyone adds a templater, this equality check breaks — which is the
+    // signal to stop and reconsider whether "content-free at rest" still holds.
+    expect(req.payload).toEqual(req.payload);
+    expect((req.payload.aps as Record<string, unknown>).alert).toEqual({
+      title: "At the door",
+      body: "Person, 6s",
+    });
   });
 });

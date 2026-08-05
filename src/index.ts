@@ -9,9 +9,11 @@ import {
   relayStatus,
   testPayload,
   validate,
+  validateSituation,
   validateTest,
   type JwtSigner,
   type RelayRequest,
+  type SituationRelayRequest,
   type TestRequest,
 } from "./relay";
 
@@ -83,7 +85,8 @@ export default {
     const url = new URL(request.url);
     const isPush = url.pathname === "/v1/relay/push";
     const isTest = url.pathname === "/v1/relay/test";
-    if (request.method !== "POST" || (!isPush && !isTest)) {
+    const isSituation = url.pathname === "/v1/relay/situation";
+    if (request.method !== "POST" || (!isPush && !isTest && !isSituation)) {
       return Response.json({ error: "not found" }, { status: 404 });
     }
 
@@ -94,7 +97,11 @@ export default {
       return Response.json({ error: "invalid JSON" }, { status: 400 });
     }
 
-    const invalid = isTest ? validateTest(body) : validate(body);
+    const invalid = isTest
+      ? validateTest(body)
+      : isSituation
+      ? validateSituation(body)
+      : validate(body);
     if (invalid) return Response.json({ error: invalid }, { status: 422 });
 
     // Rate limited on the same per-token budget as real pushes: the button is
@@ -107,6 +114,15 @@ export default {
 
     if (isTest) {
       return forward(env, body as unknown as TestRequest, testPayload());
+    }
+    if (isSituation) {
+      const req = body as unknown as SituationRelayRequest;
+      // The sidecar has already assembled `payload` — including interruption
+      // level, sound, thread-id, category, and the situation-shaped extras.
+      // The relay contributes only routing and the collapse-id header.
+      return forward(env, req, req.payload, {
+        "apns-collapse-id": req["apns-collapse-id"].slice(0, 64),
+      });
     }
     const req = body as unknown as RelayRequest;
     return forward(env, req, apsPayload(req), {
