@@ -5,6 +5,7 @@
 import {
   apnsHost,
   apsPayload,
+  hintHeaders,
   liveActivityTopic,
   makeJwtSigner,
   relayStatus,
@@ -27,6 +28,22 @@ export interface Env {
   APNS_TEAM_ID: string;
   /** The app's bundle id — the APNs topic. */
   APNS_TOPIC: string;
+  /** Shared secret required in `x-relay-key` on every request. Optional so an
+   * existing deployment keeps working until the secret is set on both ends —
+   * once set, requests without the matching header are rejected. */
+  RELAY_KEY?: string;
+}
+
+/** Constant-time-ish string compare; avoids an early-exit length oracle. */
+export function keyMatches(expected: string, provided: string | null): boolean {
+  if (provided === null) return false;
+  const a = new TextEncoder().encode(expected);
+  const b = new TextEncoder().encode(provided);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    diff |= (a[i % a.length] ?? 0) ^ (b[i % b.length] ?? 0);
+  }
+  return diff === 0;
 }
 
 // Module-scope caches survive across requests within an isolate.
@@ -61,27 +78,38 @@ async function forward(
   payload: Record<string, unknown>,
   extraHeaders: Record<string, string> = {},
 ): Promise<Response> {
-  signer ??= makeJwtSigner(env.APNS_AUTH_KEY, env.APNS_KEY_ID, env.APNS_TEAM_ID);
-  const jwt = await signer.token();
+  let jwt: string;
+  try {
+    signer ??= makeJwtSigner(env.APNS_AUTH_KEY, env.APNS_KEY_ID, env.APNS_TEAM_ID);
+    jwt = await signer.token();
+  } catch {
+    // A malformed .p8 secret shouldn't surface as a bare Worker 500.
+    return Response.json({ detail: "relay misconfigured: cannot sign provider JWT" }, { status: 502 });
+  }
 
   // `extraHeaders` is spread last so a route that needs different `apns-topic`
   // or `apns-push-type` (the Live Activity route sends
   // `liveactivity` + `.push-type.liveactivity` topic) can override the
   // per-request defaults established for the historical `alert` shape.
-  const apnsResponse = await fetch(
-    `https://${apnsHost(req.environment)}/3/device/${req.device_token}`,
-    {
-      method: "POST",
-      headers: {
-        authorization: `bearer ${jwt}`,
-        "apns-topic": env.APNS_TOPIC,
-        "apns-push-type": "alert",
-        "apns-priority": "10",
-        ...extraHeaders,
+  let apnsResponse: Response;
+  try {
+    apnsResponse = await fetch(
+      `https://${apnsHost(req.environment)}/3/device/${req.device_token}`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `bearer ${jwt}`,
+          "apns-topic": env.APNS_TOPIC,
+          "apns-push-type": "alert",
+          "apns-priority": "10",
+          ...extraHeaders,
+        },
+        body: JSON.stringify(payload),
       },
-      body: JSON.stringify(payload),
-    },
-  );
+    );
+  } catch (e) {
+    return Response.json({ detail: `apns connection failed: ${String(e).slice(0, 200)}` }, { status: 502 });
+  }
 
   const { status, detail } = relayStatus(apnsResponse.status, await apnsResponse.text());
   return Response.json({ detail }, { status });
@@ -99,6 +127,12 @@ export default {
       (!isPush && !isTest && !isSituation && !isLiveActivity)
     ) {
       return Response.json({ error: "not found" }, { status: 404 });
+    }
+
+    // Shared-secret gate. Enforced only once RELAY_KEY is configured, so an
+    // in-place deploy doesn't lock out a sidecar that hasn't been updated yet.
+    if (env.RELAY_KEY && !keyMatches(env.RELAY_KEY, request.headers.get("x-relay-key"))) {
+      return Response.json({ error: "unauthorized" }, { status: 401 });
     }
 
     let body: unknown;
@@ -140,24 +174,27 @@ export default {
       // into one notification. See APNS_COLLAPSE_ID_MAX_BYTES.
       return forward(env, req, req.payload, {
         "apns-collapse-id": req["apns-collapse-id"],
+        ...hintHeaders(req),
       });
     }
     if (isLiveActivity) {
       const req = body as unknown as LiveActivityRelayRequest;
       // LA push shape overrides two headers vs the alert path: the topic gains
       // the `.push-type.liveactivity` suffix (Apple contract) and the push
-      // type flips from `alert` to `liveactivity`. Priority stays 10 —
-      // Present-tier LAs are still user-attention-worthy, just silent by
-      // absence of the `alert` key in the payload's aps.
+      // type flips from `alert` to `liveactivity`. The sidecar sets
+      // `apns_priority: 5` on silent updates (Apple's LA update budget) and
+      // 10 on alerting ones; absent hints keep the historical priority 10.
       return forward(env, req, req.payload, {
         "apns-topic": liveActivityTopic(env.APNS_TOPIC),
         "apns-push-type": "liveactivity",
         "apns-collapse-id": req["apns-collapse-id"],
+        ...hintHeaders(req),
       });
     }
     const req = body as unknown as RelayRequest;
     return forward(env, req, apsPayload(req), {
       "apns-collapse-id": req["apns-collapse-id"].slice(0, 64),
+      ...hintHeaders(req),
     });
   },
 };

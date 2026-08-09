@@ -22,6 +22,45 @@ export interface RelayRequest {
   server_id: string;
   severity: string;
   "apns-collapse-id": string;
+  apns_priority?: number;
+}
+
+/** Optional per-push delivery hints the sidecar may attach (Phase 5). */
+export interface DeliveryHints {
+  /** APNs priority tier. Silent LA updates must use 5 per Apple's budget. */
+  apns_priority?: number;
+  /** Unix seconds after which Apple discards an undelivered push. */
+  apns_expiration?: number;
+}
+
+const ALLOWED_PRIORITIES = new Set([1, 5, 10]);
+
+/**
+ * Validates the optional delivery-hint fields. Expiration is bounded to a
+ * year out so a sidecar bug sending milliseconds (13 digits) is caught here
+ * instead of turning into an effectively-immortal push.
+ */
+export function checkDeliveryHints(b: Record<string, unknown>): string | null {
+  if (b.apns_priority !== undefined) {
+    if (typeof b.apns_priority !== "number" || !ALLOWED_PRIORITIES.has(b.apns_priority)) {
+      return "apns_priority must be 1, 5, or 10";
+    }
+  }
+  if (b.apns_expiration !== undefined) {
+    const e = b.apns_expiration;
+    if (typeof e !== "number" || !Number.isInteger(e) || e < 0 || e > 4_102_444_800) {
+      return "apns_expiration must be a unix-seconds integer";
+    }
+  }
+  return null;
+}
+
+/** The headers implied by a request's delivery hints; empty when none set. */
+export function hintHeaders(hints: DeliveryHints): Record<string, string> {
+  const h: Record<string, string> = {};
+  if (hints.apns_priority !== undefined) h["apns-priority"] = String(hints.apns_priority);
+  if (hints.apns_expiration !== undefined) h["apns-expiration"] = String(hints.apns_expiration);
+  return h;
 }
 
 /** A test push needs only the two fields that decide *where* it goes. */
@@ -46,6 +85,8 @@ export interface SituationRelayRequest {
   "apns-collapse-id": string;
   /** Full APNs payload, already assembled by the sidecar. */
   payload: Record<string, unknown>;
+  apns_priority?: number;
+  apns_expiration?: number;
 }
 
 /** APNs standard-alert cap. Rejecting oversized payloads here is friendlier
@@ -78,6 +119,8 @@ export interface LiveActivityRelayRequest {
   "apns-collapse-id": string;
   event: "start" | "update" | "end";
   payload: Record<string, unknown>;
+  apns_priority?: number;
+  apns_expiration?: number;
 }
 
 const TOKEN_RE = /^[0-9a-fA-F]{16,200}$/;
@@ -111,7 +154,7 @@ export function validate(body: unknown): string | null {
     const bad = checkField(b, key);
     if (bad) return bad;
   }
-  return checkRouting(b);
+  return checkRouting(b) ?? checkDeliveryHints(b);
 }
 
 /** Same, for /v1/relay/test — routing fields only, nothing content-bearing. */
@@ -169,7 +212,7 @@ export function validateLiveActivity(body: unknown): string | null {
   }
   const size = new TextEncoder().encode(JSON.stringify(payload)).byteLength;
   if (size > APNS_PAYLOAD_MAX_BYTES) return `payload too large (${size} > ${APNS_PAYLOAD_MAX_BYTES})`;
-  return null;
+  return checkDeliveryHints(b);
 }
 
 /**
@@ -204,7 +247,7 @@ export function validateSituation(body: unknown): string | null {
   // failing here means "will never work," not "might work depending on Apple."
   const size = new TextEncoder().encode(JSON.stringify(b.payload)).byteLength;
   if (size > APNS_PAYLOAD_MAX_BYTES) return `payload too large (${size} > ${APNS_PAYLOAD_MAX_BYTES})`;
-  return null;
+  return checkDeliveryHints(b);
 }
 
 export function apnsHost(environment: RelayRequest["environment"]): string {

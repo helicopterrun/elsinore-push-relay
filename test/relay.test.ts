@@ -4,6 +4,8 @@ import {
   APNS_PAYLOAD_MAX_BYTES,
   apnsHost,
   apsPayload,
+  checkDeliveryHints,
+  hintHeaders,
   liveActivityTopic,
   makeJwtSigner,
   p8ToPkcs8Bytes,
@@ -17,7 +19,7 @@ import {
   type RelayRequest,
   type SituationRelayRequest,
 } from "../src/relay";
-import { rateLimited } from "../src/index";
+import { keyMatches, rateLimited } from "../src/index";
 
 const good: RelayRequest = {
   device_token: "a".repeat(64),
@@ -416,5 +418,57 @@ describe("liveActivityTopic", () => {
     expect(liveActivityTopic("com.houseofpaimon.Elsinore")).toBe(
       "com.houseofpaimon.Elsinore.push-type.liveactivity",
     );
+  });
+});
+
+describe("delivery hints (Phase 5)", () => {
+  const laGood = {
+    device_token: "a".repeat(64),
+    environment: "production",
+    "apns-collapse-id": "card-1",
+    event: "update",
+    payload: { aps: { event: "update" } },
+  };
+
+  it("accepts valid priority and expiration on every route", () => {
+    expect(validate({ ...good, apns_priority: 10 })).toBeNull();
+    expect(validateLiveActivity({ ...laGood, apns_priority: 5, apns_expiration: 1_800_000_000 })).toBeNull();
+    expect(
+      validateSituation({
+        device_token: "a".repeat(64),
+        environment: "production",
+        "apns-collapse-id": "sit-1",
+        payload: { aps: {} },
+        apns_expiration: 1_800_000_000,
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects out-of-range hints", () => {
+    expect(checkDeliveryHints({ apns_priority: 7 })).toMatch(/apns_priority/);
+    expect(checkDeliveryHints({ apns_priority: "10" })).toMatch(/apns_priority/);
+    expect(checkDeliveryHints({ apns_expiration: -1 })).toMatch(/apns_expiration/);
+    expect(checkDeliveryHints({ apns_expiration: 1.5 })).toMatch(/apns_expiration/);
+    // milliseconds instead of seconds — 13 digits, over the year-4100 bound
+    expect(checkDeliveryHints({ apns_expiration: 1_800_000_000_000 })).toMatch(/apns_expiration/);
+    expect(validateLiveActivity({ ...laGood, apns_priority: 2 })).toMatch(/apns_priority/);
+  });
+
+  it("maps hints to headers, empty when absent", () => {
+    expect(hintHeaders({})).toEqual({});
+    expect(hintHeaders({ apns_priority: 5, apns_expiration: 123 })).toEqual({
+      "apns-priority": "5",
+      "apns-expiration": "123",
+    });
+  });
+});
+
+describe("keyMatches", () => {
+  it("accepts only the exact shared key", () => {
+    expect(keyMatches("s3cret", "s3cret")).toBe(true);
+    expect(keyMatches("s3cret", "s3creT")).toBe(false);
+    expect(keyMatches("s3cret", "s3cret2")).toBe(false);
+    expect(keyMatches("s3cret", "")).toBe(false);
+    expect(keyMatches("s3cret", null)).toBe(false);
   });
 });
