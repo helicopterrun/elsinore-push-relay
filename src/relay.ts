@@ -123,7 +123,14 @@ export interface LiveActivityRelayRequest {
   apns_expiration?: number;
 }
 
-const TOKEN_RE = /^[0-9a-fA-F]{16,200}$/;
+// APNs device tokens are 32 bytes (64 hex), but Live Activity and
+// push-to-start tokens are much larger and variable — 128-byte (256 hex)
+// tokens are routine and Apple has not published a hard ceiling. The old
+// {16,200} bound rejected every 256-hex LA/push-to-start token with
+// "device_token must be hex", which then never delivered. The upper bound
+// here (which also caps the token's length) is generous so real tokens pass
+// while still rejecting junk; other fields keep the smaller MAX_FIELD cap.
+const TOKEN_RE = /^[0-9a-fA-F]{16,512}$/;
 const MAX_FIELD = 300;
 
 function checkField(b: Record<string, unknown>, key: string): string | null {
@@ -135,11 +142,16 @@ function checkField(b: Record<string, unknown>, key: string): string | null {
 
 /** Shared by both routes: the token and the endpoint it is routed to. */
 function checkRouting(b: Record<string, unknown>): string | null {
-  for (const key of ["device_token", "environment"]) {
-    const bad = checkField(b, key);
-    if (bad) return bad;
+  const bad = checkField(b, "environment");
+  if (bad) return bad;
+  // device_token is validated against TOKEN_RE rather than the generic
+  // MAX_FIELD cap: LA/push-to-start tokens (256 hex) exceed MAX_FIELD, and
+  // TOKEN_RE's own upper bound already caps the length.
+  const tok = b.device_token;
+  if (typeof tok !== "string" || tok.length === 0) {
+    return "device_token must be a non-empty string";
   }
-  if (!TOKEN_RE.test(b.device_token as string)) return "device_token must be hex";
+  if (!TOKEN_RE.test(tok)) return "device_token must be hex";
   if (b.environment !== "production" && b.environment !== "sandbox") {
     return "environment must be 'production' or 'sandbox'";
   }

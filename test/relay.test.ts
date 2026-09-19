@@ -41,6 +41,12 @@ describe("validate", () => {
   it("rejects a non-hex device token", () => {
     expect(validate({ ...good, device_token: "zz".repeat(20) })).toMatch(/hex/);
   });
+  it("accepts a 256-hex Live Activity / push-to-start token", () => {
+    expect(validate({ ...good, device_token: "a".repeat(256) })).toBeNull();
+  });
+  it("rejects a token longer than the field cap", () => {
+    expect(validate({ ...good, device_token: "a".repeat(513) })).toMatch(/hex|too long/);
+  });
   it("rejects unknown environments", () => {
     expect(validate({ ...good, environment: "staging" })).toMatch(/environment/);
   });
