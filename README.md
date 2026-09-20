@@ -1,7 +1,7 @@
 # elsinore-push-relay
 
 The one shared APNs relay for [Elsinore] sidecars. Every self-hosted
-`frigate-sidecar` posts content-free push requests here; the relay signs the
+Marcellus (the Frigate sidecar) posts content-free push requests here; the relay signs the
 Apple provider JWT with the app team's `.p8` key and forwards a fixed,
 severity-keyed alert to APNs. It exists because APNs keys are team-bound —
 only the team that owns `com.houseofpaimon.Elsinore` can push to it, so
