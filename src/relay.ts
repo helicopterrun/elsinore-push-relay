@@ -2,7 +2,7 @@
 // plain Node: payload validation, the severity-keyed APNs body template, and
 // ES256 provider-JWT signing via WebCrypto.
 //
-// Wire contract (implemented by frigate-sidecar's RelayTransport): POST
+// Wire contract (implemented by Marcellus's (the frigate-sidecar's) RelayTransport): POST
 // /v1/relay/push with {device_token, environment, handle, server_id,
 // severity, "apns-collapse-id"}. Deliberately content-free — no camera name,
 // label, or imagery ever reaches this service; the iOS notification service

@@ -1,4 +1,4 @@
-// Cloudflare Worker entry: the one public endpoint every frigate-sidecar's
+// Cloudflare Worker entry: the one public endpoint every Marcellus's (frigate-sidecar's)
 // RelayTransport posts to. Holds no state beyond a per-isolate rate limiter
 // and the cached provider JWT — no database, no per-user records, by design.
 
