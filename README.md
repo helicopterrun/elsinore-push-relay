@@ -1,18 +1,30 @@
 # elsinore-push-relay
 
 The one shared APNs relay for [Elsinore] sidecars. Every self-hosted
-Marcellus (the Frigate sidecar) posts content-free push requests here; the relay signs the
-Apple provider JWT with the app team's `.p8` key and forwards a fixed,
-severity-keyed alert to APNs. It exists because APNs keys are team-bound —
-only the team that owns `com.houseofpaimon.Elsinore` can push to it, so
-users cannot bring their own key.
+Marcellus (the Frigate sidecar) posts push requests here; the relay signs the
+Apple provider JWT with the app team's `.p8` key and forwards them to APNs.
+It exists because APNs keys are team-bound — only the team that owns
+`com.houseofpaimon.Elsinore` can push to it, so users cannot bring their
+own key.
 
-Privacy scope (see Elsinore's `sidecar-push-notifications-spec.md` §4): the
-relay receives `{device_token, environment, handle, server_id, severity,
-apns-collapse-id}` plus optional delivery hints (`apns_priority`,
-`apns_expiration`) and nothing else. No camera names, labels, or imagery —
-the iOS notification extension redeems `handle` against the *user's own*
-sidecar after delivery. The relay keeps no database and no per-user records.
+Privacy scope depends on the route:
+
+- `POST /v1/relay/push` receives `{device_token, environment, handle,
+  server_id, severity, apns-collapse-id}` plus optional delivery hints
+  (`apns_priority`, `apns_expiration`) and sends a fixed, severity-keyed
+  alert. No camera names, labels or imagery pass through this route.
+- `POST /v1/relay/situation` and `POST /v1/relay/liveactivity` forward the
+  sidecar-built payload verbatim. That payload **does** carry the alert's
+  title and body text (e.g. "Person at Front Door"), camera and zone names,
+  subject kind, severity, timestamps and the card key, and the Live Activity
+  routes add the content state (zone names, a motion label, normalized path
+  points). These are the card-pipeline routes current sidecars use.
+
+On every route, images never pass through the relay: payloads carry at most a
+handle or URL on the *user's own* sidecar, which the app's notification
+extension fetches after delivery. The relay keeps no database and no
+per-user records. Elsinore's public privacy page
+(`docs/site/src/privacy.md`) describes the same scope.
 
 ## Auth
 
@@ -28,8 +40,8 @@ the production worker has it set. The sidecar sends the same value from its
 
 `POST /v1/relay/situation` and `POST /v1/relay/liveactivity` carry the
 card-pipeline payloads (situation-style alert body, Live Activity
-start/update/end respectively) — same privacy scope, same auth, same
-response mapping.
+start/update/end respectively) — the wider privacy scope described above,
+same auth, same response mapping.
 
 All payload routes accept optional `apns_priority` (1, 5, or 10 — 5 for
 silent Live Activity updates, 10 for alerts) and `apns_expiration` (Unix
