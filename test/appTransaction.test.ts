@@ -150,15 +150,46 @@ describe("verifyAppTransaction", () => {
     expect(await reason(verifyAppTransaction(wrongLeaf, policy, TEST_ROOT, NOW_MS))).toBe("leaf_signature");
   });
 
-  it("rejects expired and not-yet-valid certificates", async () => {
-    const jws = await signJws(txPayload());
+  describe("certificate validity at the signing date (receiptCreationDate), as Apple's library", () => {
     const leaf = parseCertificate(certDer("leaf"));
-    const after = leaf.notAfter + 2 * 60_000;
-    expect(await reason(verifyAppTransaction(jws, policy, TEST_ROOT, after))).toBe("certificate_expired");
-    const before = leaf.notBefore - 2 * 60_000;
-    expect(await reason(verifyAppTransaction(jws, policy, TEST_ROOT, before))).toBe("certificate_expired");
-    // Within the 60 s skew either side is still fine.
-    expect(await reason(verifyAppTransaction(jws, policy, TEST_ROOT, leaf.notAfter + 30_000))).toBe("accepted");
+    const YEAR = 365 * 86400 * 1000;
+
+    it("accepts a cached transaction whose leaf has since expired", async () => {
+      const jws = await signJws(txPayload({ receiptCreationDate: NOW_MS - 1000 }));
+      expect(await reason(verifyAppTransaction(jws, policy, TEST_ROOT, leaf.notAfter + YEAR))).toBe("accepted");
+    });
+
+    it("rejects a transaction signed after the leaf expired or before it was valid", async () => {
+      const late = leaf.notAfter + 2 * 60_000;
+      const lateJws = await signJws(txPayload({ receiptCreationDate: late }));
+      expect(await reason(verifyAppTransaction(lateJws, policy, TEST_ROOT, late))).toBe("certificate_expired");
+      const early = leaf.notBefore - 2 * 60_000;
+      const earlyJws = await signJws(txPayload({ receiptCreationDate: early }));
+      expect(await reason(verifyAppTransaction(earlyJws, policy, TEST_ROOT, NOW_MS))).toBe("certificate_expired");
+      // Within the 60 s skew is still fine.
+      const edge = await signJws(txPayload({ receiptCreationDate: leaf.notAfter + 30_000 }));
+      expect(await reason(verifyAppTransaction(edge, policy, TEST_ROOT, leaf.notAfter + 30_000))).toBe("accepted");
+    });
+
+    it("rejects a signing date in the future (beyond 60 s skew)", async () => {
+      const ahead = await signJws(txPayload({ receiptCreationDate: NOW_MS + 5 * 60_000 }));
+      expect(await reason(verifyAppTransaction(ahead, policy, TEST_ROOT, NOW_MS))).toBe("signed_in_future");
+      const slightly = await signJws(txPayload({ receiptCreationDate: NOW_MS + 30_000 }));
+      expect(await reason(verifyAppTransaction(slightly, policy, TEST_ROOT, NOW_MS))).toBe("accepted");
+    });
+
+    it("without receiptCreationDate falls back to now, as Apple's library does", async () => {
+      const jws = await signJws(txPayload({ receiptCreationDate: undefined }));
+      expect(await reason(verifyAppTransaction(jws, policy, TEST_ROOT, NOW_MS))).toBe("accepted");
+      expect(await reason(verifyAppTransaction(jws, policy, TEST_ROOT, leaf.notAfter + YEAR))).toBe(
+        "certificate_expired",
+      );
+    });
+
+    it("rejects a mistyped receiptCreationDate", async () => {
+      const jws = await signJws(txPayload({ receiptCreationDate: "2026-01-01" }));
+      expect(await reason(verifyAppTransaction(jws, policy, TEST_ROOT, NOW_MS))).toBe("payload");
+    });
   });
 
   it("rejects a bad alg", async () => {

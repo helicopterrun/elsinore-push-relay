@@ -144,14 +144,14 @@ describe("install id", () => {
     expect(stableInstallIdentifier(tx({ appTransactionId: "" }))).toBeNull();
   });
 
-  it("is a deterministic 16-byte b64url HMAC of 'iid:' + the stable id", async () => {
-    const a = await deriveInstallId("s", "7042");
-    expect(a).toBe(await deriveInstallId("s", "7042"));
+  it("is a deterministic, keyless 16-byte b64url SHA-256 of the prefixed stable id", async () => {
+    const a = await deriveInstallId("7042");
+    expect(a).toBe(await deriveInstallId("7042"));
     expect(b64urlDecode(a).length).toBe(16);
-    expect(a).not.toBe(await deriveInstallId("s", "7043"));
-    expect(a).not.toBe(await deriveInstallId("other", "7042"));
-    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode("s"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-    const full = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode("iid:7042")));
+    expect(a).not.toBe(await deriveInstallId("7043"));
+    const full = new Uint8Array(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode("elsinore-relay-iid:v1:7042")),
+    );
     expect(a).toBe(b64urlEncode(full.subarray(0, 16)));
   });
 });

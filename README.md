@@ -165,8 +165,10 @@ should fetch a fresh one after `refresh_after` (`iat + 30 d`). `env` is the
 transaction's own environment value.
 
 `iid` is b64url of the first 16 bytes of
-HMAC-SHA256(`RELAY_CREDENTIAL_SECRET`, `"iid:" + <stable id>`), where the
-stable id is the transaction's `appTransactionId` when present, otherwise
+SHA-256(`"elsinore-relay-iid:v1:" + <stable id>`) — keyless on purpose: the
+iid is not a secret (it is returned to the client and sits in the credential
+payload), and keeping it independent of the signing secret means a rotation
+changes no iid. The stable id is the transaction's `appTransactionId` when present, otherwise
 `bundleId`, `originalPurchaseDate` and `deviceVerification` together. The same
 transaction always yields the same `iid`. Apple documents `appTransactionId` as
 one value per Apple Account per app (per family member with Family Sharing),
@@ -190,7 +192,13 @@ Mirroring Apple's own `SignedDataVerifier` from
 - the leaf carries Apple's marker extension `1.2.840.113635.100.6.11.1` and
   the intermediate carries `1.2.840.113635.100.6.2.1` (Apple Worldwide
   Developer Relations);
-- all three certificates are within their validity period now (±60 s);
+- all three certificates are within their validity period (±60 s) at the
+  transaction's signing date, `receiptCreationDate` — the effective date
+  Apple's library uses with online checks off (it falls back to the current
+  time when the field is absent, and so does this relay). A cached
+  AppTransaction signed while its leaf was valid therefore keeps verifying
+  after that leaf expires. A `receiptCreationDate` more than 60 s in the
+  future is rejected;
 - the JWS signature verifies with the leaf's key;
 - the payload's `bundleId` is in `ALLOWED_BUNDLE_IDS`, and its environment
   (`receiptType`) is `Production` or `Sandbox` (TestFlight builds are
@@ -229,10 +237,9 @@ npx wrangler deploy
 `RELAY_CREDENTIAL_KID = "k2"`, put a fresh `RELAY_CREDENTIAL_SECRET`, and
 deploy. Old credentials keep verifying under `k1`; clients pick up `k2`
 credentials at their next refresh. Once the old ones have expired (180 days)
-or been refreshed, remove the `_PREV` pair. Because `iid` is derived from the
-current secret, a rotation also changes every install's `iid`: re-issued
-credentials carry the new value, and any `REVOKED_IIDS` entries made under the
-old secret stop matching re-issued credentials.
+or been refreshed, remove the `_PREV` pair. A rotation does not change any
+install's `iid` (it does not depend on the secret), so `REVOKED_IIDS` entries
+stay valid across it.
 
 **Revocation.** Add the `iid` (the `install_id` from issuance, also visible in
 the credential's payload) to `REVOKED_IIDS` and deploy. Its credentials get
@@ -261,3 +268,10 @@ Per isolate, in memory, best-effort (no storage bindings):
 
 The legacy shared key keeps working exactly as before and is not subject to
 the per-`iid` budget.
+
+An AppTransaction JWS is a long-lived proof that the app was obtained from the
+App Store, not a fresh one: its holder can replay it to get new credentials for
+the same `iid` indefinitely, since certificate validity is judged at its
+signing date. Replay
+gains nothing beyond that install's own identity; the per-`iid` budget and
+revocation bound what one install can do.

@@ -70,9 +70,18 @@ export function stableInstallIdentifier(tx: AppTransactionPayload): string | nul
   return null;
 }
 
-/** iid = b64url(first 16 bytes of HMAC-SHA256(secret, "iid:" + stable id)). */
-export async function deriveInstallId(secret: string, stableId: string): Promise<string> {
-  return b64urlEncode((await hmac(secret, `iid:${stableId}`)).subarray(0, 16));
+/** Fixed, public domain-separation prefix for install ids. */
+export const IID_PREFIX = "elsinore-relay-iid:v1:";
+
+/**
+ * iid = b64url(first 16 bytes of SHA-256("elsinore-relay-iid:v1:" + stable id)).
+ * Deliberately keyless: the iid is not a secret (it is returned to the client
+ * and sits in the credential payload), and not tying it to the signing secret
+ * means a key rotation keeps every iid, and every REVOKED_IIDS entry, valid.
+ */
+export async function deriveInstallId(stableId: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", buf(utf8(IID_PREFIX + stableId))));
+  return b64urlEncode(digest.subarray(0, 16));
 }
 
 export interface IssuedCredential {

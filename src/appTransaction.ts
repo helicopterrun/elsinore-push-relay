@@ -13,7 +13,8 @@
 //   - the leaf carries extension OID 1.2.840.113635.100.6.11.1 and the
 //     intermediate carries 1.2.840.113635.100.6.2.1 (Apple's JWSDecodedHeader
 //     docs name the latter "Apple Worldwide Developer Relations");
-//   - leaf, intermediate and root are inside their validity period (±60 s);
+//   - leaf, intermediate and root are inside their validity period (±60 s)
+//     at the transaction's signing date (see below);
 //   - the JWS signature verifies with the leaf's public key;
 //   - `bundleId` and the environment (`receiptType` in the JWS payload) match.
 // Online OCSP revocation checks (Apple's `enableOnlineChecks`) are NOT done.
@@ -22,8 +23,16 @@
 // `jsonwebtoken` accept any EC algorithm for the key); the chain's third
 // certificate must be byte-identical to the pinned root (Apple's library
 // ignores it and checks the intermediate against its configured roots — this
-// code does that too); validity is checked against the current time rather
-// than the transaction's signing date (the equivalent of Apple's online mode).
+// code does that too).
+//
+// Certificate validity is checked at the same effective date Apple's library
+// uses with online checks off: `verifyJWT` takes
+// `effectiveDate = enableOnlineChecks ? new Date() : signedDateExtractor(payload)`,
+// and for an AppTransaction the extractor is
+// `t => t.receiptCreationDate === undefined ? new Date() : new Date(t.receiptCreationDate)`.
+// So a cached AppTransaction signed while its leaf was valid still verifies
+// after that leaf expires. One addition: a `receiptCreationDate` more than
+// 60 s in the future is rejected (Apple's library does not check that).
 //
 // Apple's library skips signature verification entirely for the Xcode and
 // LocalTesting environments ("Data is not signed by the App Store"). This code
@@ -136,10 +145,6 @@ export async function verifyAppTransaction(
   }
   if (!leaf.extensions.has(APPLE_LEAF_MARKER_OID)) fail("leaf_marker");
   if (!intermediate.extensions.has(APPLE_WWDR_INTERMEDIATE_OID)) fail("intermediate_marker");
-  for (const cert of [leaf, intermediate, anchor]) {
-    if (!withinValidity(cert, nowMs)) fail("certificate_expired");
-  }
-
   // ES256 (RFC 7518 §3.4): P-256 key, SHA-256, signature is the 64-byte r||s.
   if (leaf.namedCurve !== OID.p256 || signature.length !== 64) fail("jws_signature");
   try {
@@ -162,6 +167,16 @@ export async function verifyAppTransaction(
     payload = parseJsonObject(b64urlDecode(payloadB64));
   } catch {
     fail("payload");
+  }
+
+  // Effective date for certificate validity: the transaction's signing date
+  // (`receiptCreationDate`, epoch ms) when present, else now — as Apple's library.
+  const signed = payload.receiptCreationDate;
+  if (signed !== undefined && (typeof signed !== "number" || !Number.isFinite(signed))) fail("payload");
+  if (typeof signed === "number" && signed > nowMs + CERT_CLOCK_SKEW_MS) fail("signed_in_future");
+  const effectiveMs = typeof signed === "number" ? signed : nowMs;
+  for (const cert of [leaf, intermediate, anchor]) {
+    if (!withinValidity(cert, effectiveMs)) fail("certificate_expired");
   }
   const { bundleId, receiptType, appTransactionId, originalPurchaseDate, deviceVerification } = payload;
   if (typeof bundleId !== "string" || !policy.allowedBundleIds.has(bundleId)) fail("bundle_id");

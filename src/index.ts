@@ -211,7 +211,7 @@ export function makeWorker(options: WorkerOptions = {}) {
     }
     const stable = stableInstallIdentifier(tx);
     if (stable === null) return denied();
-    const iid = await deriveInstallId(keys.current.secret, stable);
+    const iid = await deriveInstallId(stable);
     if (csvSet(env.REVOKED_IIDS).has(iid)) return denied();
 
     const issued = await issueCredential(

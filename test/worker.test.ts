@@ -141,6 +141,23 @@ describe("POST /v1/relay/credential", () => {
     expect(f).not.toBe(a);
   });
 
+  it("keeps the same iid across a secret rotation", async () => {
+    const jws = await signJws(txPayload());
+    const iidUnder = async (e: Env, ip: string) =>
+      ((await (await app.fetch(credentialRequest(jws, ip), e)).json()) as { install_id: string }).install_id;
+    const before = await iidUnder(env(CONFIGS.secretOnly), "198.51.100.20");
+    const after = await iidUnder(
+      env({
+        RELAY_CREDENTIAL_SECRET: "rotated-secret",
+        RELAY_CREDENTIAL_KID: "k2",
+        RELAY_CREDENTIAL_SECRET_PREV: SECRET,
+        RELAY_CREDENTIAL_KID_PREV: "k1",
+      }),
+      "198.51.100.21",
+    );
+    expect(after).toBe(before);
+  });
+
   it("the issued credential authenticates a send", async () => {
     const e = env(CONFIGS.secretOnly);
     const issued = (await (await app.fetch(credentialRequest(await signJws(txPayload())), e)).json()) as {
