@@ -1,12 +1,28 @@
 name = "elsinore-push-relay"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"
+# Top-level setting. It used to sit under [vars], where it was only a string
+# variable; workers.dev was on anyway, because that is the default.
+workers_dev = true
 
 # Non-secret config. Secrets (set with `wrangler secret put`):
-#   APNS_AUTH_KEY  — contents of AuthKey_<KEYID>.p8
-#   APNS_KEY_ID    — the 10-char key id from developer.apple.com
-#   APNS_TEAM_ID   — the Apple Developer team id
+#   APNS_AUTH_KEY                 — contents of AuthKey_<KEYID>.p8
+#   APNS_KEY_ID                   — the 10-char key id from developer.apple.com
+#   APNS_TEAM_ID                  — the Apple Developer team id
+#   RELAY_KEY                     — legacy shared sidecar key (optional)
+#   RELAY_CREDENTIAL_SECRET       — HMAC secret for per-install credentials (optional; unset = disabled)
+#   RELAY_CREDENTIAL_SECRET_PREV  — previous credential secret, only during a rotation
 [vars]
 APNS_TOPIC = "com.houseofpaimon.Elsinore"
-
-workers_dev = true
+# Bundle ids whose App Store-signed AppTransaction may obtain a credential
+# (comma-separated). The iOS and Mac apps share one bundle id.
+ALLOWED_BUNDLE_IDS = "com.houseofpaimon.Elsinore"
+# Key id stamped into new credentials; change it together with the secret.
+RELAY_CREDENTIAL_KID = "k1"
+# During a rotation only, set this to the old kid (with RELAY_CREDENTIAL_SECRET_PREV).
+# RELAY_CREDENTIAL_KID_PREV = "k1"
+# Comma-separated install ids whose credentials are refused.
+REVOKED_IIDS = ""
+# "true" also accepts Xcode / LocalTesting transactions (they must still chain
+# to Apple's root). Leave "false" in production.
+ALLOW_XCODE_ENV = "false"
