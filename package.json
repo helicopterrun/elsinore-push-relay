@@ -2,6 +2,7 @@
   "name": "elsinore-push-relay",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "The one shared APNs relay for Elsinore sidecars: signs the provider JWT and forwards content-free push requests to Apple.",
   "type": "module",
   "scripts": {
