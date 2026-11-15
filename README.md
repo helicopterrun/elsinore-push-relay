@@ -275,3 +275,7 @@ the same `iid` indefinitely, since certificate validity is judged at its
 signing date. Replay
 gains nothing beyond that install's own identity; the per-`iid` budget and
 revocation bound what one install can do.
+
+## License
+
+MIT, the same licence as Marcellus. See [LICENSE](LICENSE).
